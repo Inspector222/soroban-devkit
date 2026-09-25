@@ -524,8 +524,15 @@ enum Commands {
     },
     /// Deploy a contract (Upload WASM + Instantiate)
     Deploy {
+        /// Path to the WASM binary to upload and deploy. Mutually exclusive with
+        /// `--wasm-hash`.
         #[arg(short, long)]
-        wasm: String,
+        wasm: Option<String>,
+        /// Create-only: deploy from already-uploaded code identified by its
+        /// 40-char hex WASM hash, skipping the upload step (resume a deploy whose
+        /// upload succeeded but create failed). Mutually exclusive with `--wasm`.
+        #[arg(long, value_name = "HASH")]
+        wasm_hash: Option<String>,
         /// Deployment salt (40 hex chars = 20 bytes). Auto-generated if omitted.
         #[arg(short, long)]
         salt: Option<String>,
@@ -4515,6 +4522,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Deploy {
             wasm,
+            wasm_hash,
             salt,
             format,
             identity,
@@ -4524,6 +4532,24 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             net,
         } => {
             let fmt = parse_format_str(&format);
+
+            // Exactly one code source: --wasm (upload + create) or --wasm-hash
+            // (create-only from already-uploaded code). Validate before any I/O.
+            match (wasm.is_some(), wasm_hash.is_some()) {
+                (true, true) => return Err("specify only one of --wasm or --wasm-hash".into()),
+                (false, false) => {
+                    return Err("provide either --wasm <FILE> or --wasm-hash <HASH>".into())
+                }
+                _ => {}
+            }
+            // --deny-breaking diffs two WASM binaries, so it needs the new WASM
+            // file; it is meaningless on the create-only --wasm-hash path.
+            if deny_breaking && wasm_hash.is_some() {
+                return Err(
+                    "--deny-breaking compares WASM binaries and cannot be used with --wasm-hash"
+                        .into(),
+                );
+            }
 
             // Local helper: parse 40-char hex into 20-byte salt; validate strictly
             fn parse_salt_hex(s: &str) -> Result<[u8; 20], String> {
@@ -4583,67 +4609,85 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             sdkt_xdr::parse_scval_args(&parsed_args)
                 .map_err(|e| format!("Invalid constructor argument: {}", e))?;
 
-            // Optional deploy guard: abort on a backwards-incompatible upgrade.
-            if deny_breaking {
-                let baseline = old_wasm.ok_or_else(|| {
-                    "The --deny-breaking flag requires --old-wasm <deployed.wasm> (the currently deployed contract)".to_string()
-                })?;
-                let old_bytes = fs::read(&baseline)
-                    .map_err(|e| format!("Failed to read OLD WASM '{}': {}", baseline, e))?;
-                let new_bytes = fs::read(&wasm)
-                    .map_err(|e| format!("Failed to read NEW WASM '{}': {}", wasm, e))?;
-                match sdkt_wasm::upgrade_safety_wasm(&old_bytes, &new_bytes) {
-                    Ok(verdict) => {
-                        if !verdict.compatible {
-                            eprintln!("Deployment aborted: upgrade is NOT backwards-compatible.");
-                            print_upgrade_verdict(&verdict);
-                            process::exit(1);
-                        }
-                        eprintln!(
-                            "Upgrade-safety check passed: deployment is backwards-compatible."
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("Upgrade-safety check failed to compute verdict: {}", e);
-                        process::exit(1);
-                    }
-                }
-            }
-
-            // Read WASM file
-            let wasm_bytes =
-                fs::read(&wasm).map_err(|e| format!("Error reading WASM file {}: {}", wasm, e))?;
-
-            // Load identity for signing
+            // Load identity for signing (shared by both code sources).
             let identity_store = sdkt_storage::IdentityStore::new()
                 .map_err(|e| format!("Failed to access identity store: {}", e))?;
             let identity_obj = identity_store
                 .get(&identity)
                 .map_err(|e| format!("Identity '{}' not found: {}", identity, e))?;
-
-            // Load signing key from storage
             let signing_key = identity_store
                 .load_signing_key(&identity)
                 .map_err(|e| format!("Failed to load signing key for '{}': {}", identity, e))?;
             let signer = sdkt_xdr::sign::Ed25519Signer::from_seed(&signing_key.to_bytes());
 
             let client = SorobanRpcClient::from_config(&network_config);
-
             // Source account is the identity's public key
             let source_account = identity_obj.public_key.clone();
 
-            use sdkt_rpc::deploy_contract_with_args;
-            match deploy_contract_with_args(
-                &client,
-                &wasm_bytes,
-                &source_account,
-                &signer,
-                network,
-                salt_bytes,
-                parsed_args,
-            )
-            .await
-            {
+            let outcome_result = if let Some(hash) = wasm_hash.as_ref() {
+                // Create-only: deploy from already-uploaded code; no upload step.
+                sdkt_rpc::deploy_contract_from_hash(
+                    &client,
+                    hash,
+                    &source_account,
+                    &signer,
+                    network,
+                    salt_bytes,
+                    parsed_args,
+                )
+                .await
+            } else {
+                // Full deploy from a WASM file (present per the mutual-exclusion
+                // check above).
+                let wasm = wasm
+                    .as_ref()
+                    .expect("--wasm present on the full-deploy path");
+
+                // Optional deploy guard: abort on a backwards-incompatible upgrade.
+                if deny_breaking {
+                    let baseline = old_wasm.ok_or_else(|| {
+                        "The --deny-breaking flag requires --old-wasm <deployed.wasm> (the currently deployed contract)".to_string()
+                    })?;
+                    let old_bytes = fs::read(&baseline)
+                        .map_err(|e| format!("Failed to read OLD WASM '{}': {}", baseline, e))?;
+                    let new_bytes = fs::read(wasm)
+                        .map_err(|e| format!("Failed to read NEW WASM '{}': {}", wasm, e))?;
+                    match sdkt_wasm::upgrade_safety_wasm(&old_bytes, &new_bytes) {
+                        Ok(verdict) => {
+                            if !verdict.compatible {
+                                eprintln!(
+                                    "Deployment aborted: upgrade is NOT backwards-compatible."
+                                );
+                                print_upgrade_verdict(&verdict);
+                                process::exit(1);
+                            }
+                            eprintln!(
+                                "Upgrade-safety check passed: deployment is backwards-compatible."
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Upgrade-safety check failed to compute verdict: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+
+                let wasm_bytes = fs::read(wasm)
+                    .map_err(|e| format!("Error reading WASM file {}: {}", wasm, e))?;
+
+                sdkt_rpc::deploy_contract_with_args(
+                    &client,
+                    &wasm_bytes,
+                    &source_account,
+                    &signer,
+                    network,
+                    salt_bytes,
+                    parsed_args,
+                )
+                .await
+            };
+
+            match outcome_result {
                 Ok(outcome) => match &outcome {
                     sdkt_rpc::DeployOutcome::Success(res) => {
                         if fmt == OutputFormat::Json {
