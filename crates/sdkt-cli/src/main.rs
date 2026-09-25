@@ -4686,16 +4686,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 let wasm_bytes = fs::read(wasm)
                     .map_err(|e| format!("Error reading WASM file {}: {}", wasm, e))?;
 
-                sdkt_rpc::deploy_contract_with_args(
-                    &client,
-                    &wasm_bytes,
-                    &source_account,
-                    &signer,
-                    network,
-                    salt_bytes,
-                    parsed_args,
-                )
-                .await
                 // Contract IDs are deterministic. Calculate the prediction
                 // only for the full-WASM path; hash-only recovery already
                 // delegates its address handling to the RPC helper.
@@ -4704,7 +4694,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     salt_bytes
                 };
-                let predicted = if let Some(prediction_salt) = prediction_salt {
+                let predicted = if let Some(prediction_salt) = prediction_salt.clone() {
                     let wasm_digest: [u8; 32] = Sha256::digest(&wasm_bytes).into();
                     let contract_id = sdkt_xdr::derive_contract_id(
                         &network.network_id(),
@@ -4720,13 +4710,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some((contract_id, wasm_hash, prediction_salt)) = &predicted {
                     if dry_run {
                         if fmt == OutputFormat::Json {
-                            println!("{}", serde_json::json!({
-                                "status": "dry_run",
-                                "contractId": contract_id,
-                                "wasmHash": wasm_hash,
-                                "salt": hex::encode(prediction_salt),
-                                "submitted": false,
-                            }));
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "status": "dry_run",
+                                    "contractId": contract_id,
+                                    "wasmHash": wasm_hash,
+                                    "salt": hex::encode(prediction_salt),
+                                    "submitted": false,
+                                })
+                            );
                         } else {
                             println!("Predicted Contract ID: {}", contract_id);
                             println!("WASM Hash: {}", wasm_hash);
