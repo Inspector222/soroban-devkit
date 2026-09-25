@@ -530,7 +530,7 @@ enum Commands {
         #[arg(short, long)]
         wasm: Option<String>,
         /// Create-only: deploy from already-uploaded code identified by its
-        /// 40-char hex WASM hash, skipping the upload step (resume a deploy whose
+        /// 64-char hex WASM hash, skipping the upload step (resume a deploy whose
         /// upload succeeded but create failed). Mutually exclusive with `--wasm`.
         #[arg(long, value_name = "HASH")]
         wasm_hash: Option<String>,
@@ -4620,6 +4620,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             sdkt_xdr::parse_scval_args(&parsed_args)
                 .map_err(|e| format!("Invalid constructor argument: {}", e))?;
 
+            // Read the new WASM before looking up the identity. This preserves
+            // the fail-fast behavior for a missing or unreadable file on the
+            // full-deploy path; create-only recovery does not need a file.
+            let preloaded_wasm = wasm
+                .as_ref()
+                .map(|path| {
+                    fs::read(path).map_err(|e| format!("Error reading WASM file {}: {}", path, e))
+                })
+                .transpose()?;
+
             // Load identity for signing (shared by both code sources).
             let identity_store = sdkt_storage::IdentityStore::new()
                 .map_err(|e| format!("Failed to access identity store: {}", e))?;
@@ -4661,8 +4671,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     })?;
                     let old_bytes = fs::read(&baseline)
                         .map_err(|e| format!("Failed to read OLD WASM '{}': {}", baseline, e))?;
-                    let new_bytes = fs::read(wasm)
-                        .map_err(|e| format!("Failed to read NEW WASM '{}': {}", wasm, e))?;
+                    let new_bytes = preloaded_wasm
+                        .as_ref()
+                        .expect("full-deploy path preloads the new WASM");
                     match sdkt_wasm::upgrade_safety_wasm(&old_bytes, &new_bytes) {
                         Ok(verdict) => {
                             if !verdict.compatible {
@@ -4683,8 +4694,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                let wasm_bytes = fs::read(wasm)
-                    .map_err(|e| format!("Error reading WASM file {}: {}", wasm, e))?;
+                let wasm_bytes = preloaded_wasm
+                    .as_ref()
+                    .expect("full-deploy path preloads the WASM");
 
                 // Contract IDs are deterministic. Calculate the prediction
                 // only for the full-WASM path; hash-only recovery already
