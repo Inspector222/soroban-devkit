@@ -4630,6 +4630,36 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .transpose()?;
 
+            // The upgrade-safety check only needs the two local WASM files and
+            // must run before identity lookup so incompatible upgrades fail
+            // deterministically even without a configured identity.
+            if deny_breaking {
+                let baseline = old_wasm.as_ref().ok_or_else(|| {
+                    "The --deny-breaking flag requires --old-wasm <deployed.wasm> (the currently deployed contract)".to_string()
+                })?;
+                let old_bytes = fs::read(baseline)
+                    .map_err(|e| format!("Failed to read OLD WASM '{}': {}", baseline, e))?;
+                let new_bytes = preloaded_wasm
+                    .as_ref()
+                    .expect("full-deploy path preloads the new WASM");
+                match sdkt_wasm::upgrade_safety_wasm(&old_bytes, new_bytes) {
+                    Ok(verdict) => {
+                        if !verdict.compatible {
+                            eprintln!("Deployment aborted: upgrade is NOT backwards-compatible.");
+                            print_upgrade_verdict(&verdict);
+                            process::exit(1);
+                        }
+                        eprintln!(
+                            "Upgrade-safety check passed: deployment is backwards-compatible."
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Upgrade-safety check failed to compute verdict: {}", e);
+                        process::exit(1);
+                    }
+                }
+            }
+
             // Load identity for signing (shared by both code sources).
             let identity_store = sdkt_storage::IdentityStore::new()
                 .map_err(|e| format!("Failed to access identity store: {}", e))?;
@@ -4663,36 +4693,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 let wasm = wasm
                     .as_ref()
                     .expect("--wasm present on the full-deploy path");
-
-                // Optional deploy guard: abort on a backwards-incompatible upgrade.
-                if deny_breaking {
-                    let baseline = old_wasm.ok_or_else(|| {
-                        "The --deny-breaking flag requires --old-wasm <deployed.wasm> (the currently deployed contract)".to_string()
-                    })?;
-                    let old_bytes = fs::read(&baseline)
-                        .map_err(|e| format!("Failed to read OLD WASM '{}': {}", baseline, e))?;
-                    let new_bytes = preloaded_wasm
-                        .as_ref()
-                        .expect("full-deploy path preloads the new WASM");
-                    match sdkt_wasm::upgrade_safety_wasm(&old_bytes, &new_bytes) {
-                        Ok(verdict) => {
-                            if !verdict.compatible {
-                                eprintln!(
-                                    "Deployment aborted: upgrade is NOT backwards-compatible."
-                                );
-                                print_upgrade_verdict(&verdict);
-                                process::exit(1);
-                            }
-                            eprintln!(
-                                "Upgrade-safety check passed: deployment is backwards-compatible."
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Upgrade-safety check failed to compute verdict: {}", e);
-                            process::exit(1);
-                        }
-                    }
-                }
 
                 let wasm_bytes = preloaded_wasm
                     .as_ref()
