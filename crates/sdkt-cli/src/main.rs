@@ -5706,8 +5706,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
+            if wasm_hash.is_some() && (dry_run || show_address) {
+                return Err(
+                    "--dry-run and --show-address are not supported with --wasm-hash".into(),
+                );
+            }
 
-            // Local helper: parse 40-char hex into 20-byte salt; validate strictly
+            // Local helper: parse 40-character hex into a 20-byte salt; validate strictly
             fn parse_salt_hex(s: &str) -> Result<[u8; 20], String> {
                 let sh = s.trim();
                 if sh.len() != 40 {
@@ -5835,10 +5840,6 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 // Full deploy from a WASM file (present per the mutual-exclusion
                 // check above).
-                let wasm = wasm
-                    .as_ref()
-                    .expect("--wasm present on the full-deploy path");
-
                 let wasm_bytes = preloaded_wasm
                     .as_ref()
                     .expect("full-deploy path preloads the WASM");

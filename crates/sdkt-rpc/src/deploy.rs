@@ -521,7 +521,7 @@ pub async fn deploy_contract_with_args(
 /// Create a contract from already-uploaded WASM code (create-only, no upload).
 ///
 /// Skips `upload_wasm` entirely and drives `create_contract` with a
-/// caller-supplied on-chain `wasm_hash` (40-char hex), reusing the same
+/// caller-supplied on-chain `wasm_hash` (64-character hex), reusing the same
 /// simulate → sign → submit → poll flow as the full deploy. With the same salt
 /// and the same wasm hash the derived contract ID is identical to what the full
 /// path would have produced, so this resumes a deployment whose upload succeeded

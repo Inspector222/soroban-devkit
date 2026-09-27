@@ -216,3 +216,20 @@ fn cli_deploy_requires_a_code_source() {
             "provide either --wasm <FILE> or --wasm-hash <HASH>",
         ));
 }
+
+#[test]
+fn cli_deploy_hash_rejects_prediction_only_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    sdkt(dir.path())
+        .args([
+            "deploy",
+            "--wasm-hash",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            "--dry-run",
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--dry-run and --show-address are not supported with --wasm-hash",
+        ));
+}
