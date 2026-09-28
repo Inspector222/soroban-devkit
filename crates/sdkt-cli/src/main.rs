@@ -5852,8 +5852,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     salt_bytes
                 };
-                let predicted = if let Some(prediction_salt) = prediction_salt.clone() {
-                    let wasm_digest: [u8; 32] = Sha256::digest(&wasm_bytes).into();
+                let predicted = if let Some(prediction_salt) = prediction_salt {
+                    let wasm_digest: [u8; 32] = Sha256::digest(wasm_bytes).into();
                     let contract_id = sdkt_xdr::derive_contract_id(
                         &network.network_id(),
                         &source_account,
@@ -5892,7 +5892,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 sdkt_rpc::deploy_contract_with_args(
                     &client,
-                    &wasm_bytes,
+                    wasm_bytes,
                     &source_account,
                     &signer,
                     network,

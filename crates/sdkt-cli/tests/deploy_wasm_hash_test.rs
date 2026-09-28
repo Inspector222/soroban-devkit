@@ -233,3 +233,56 @@ fn cli_deploy_hash_rejects_prediction_only_flags() {
             "--dry-run and --show-address are not supported with --wasm-hash",
         ));
 }
+
+#[test]
+fn cli_deploy_hash_rejects_show_address_before_identity_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    sdkt(dir.path())
+        .args([
+            "deploy",
+            "--wasm-hash",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            "--show-address",
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--dry-run and --show-address are not supported with --wasm-hash",
+        ));
+}
+
+#[test]
+fn cli_deploy_hash_completes_create_only_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, sim_count, send_count) = spawn_mock();
+
+    let generated = Command::cargo_bin("sdkt")
+        .unwrap()
+        .env("SDKT_IDENTITY_DIR", dir.path().join("identity"))
+        .env("SDKT_NETWORK_DIR", dir.path().join("network"))
+        .args(["identity", "generate", "deploy-test"])
+        .assert();
+    generated.success();
+
+    sdkt(dir.path())
+        .env("SDKT_IDENTITY_DIR", dir.path().join("identity"))
+        .args([
+            "deploy",
+            "--wasm-hash",
+            "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+            "--salt",
+            "4242424242424242424242424242424242424242",
+            "--identity",
+            "deploy-test",
+            "--rpc-url",
+            &url,
+            "--network-passphrase",
+            "Test SDF Network ; September 2015",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Contract ID:"));
+
+    assert_eq!(sim_count.load(Ordering::SeqCst), 1);
+    assert_eq!(send_count.load(Ordering::SeqCst), 1);
+}
