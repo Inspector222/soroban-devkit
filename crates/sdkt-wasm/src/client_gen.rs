@@ -287,6 +287,33 @@ pub fn generate_client_with_options(
 mod tests {
     use super::*;
     use crate::spec::ContractParameter;
+    use std::{
+        fs,
+        path::PathBuf,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("sdkt-client-gen-{}-{unique}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn param(name: &str, type_name: &str, kind: &str) -> ContractParameter {
         ContractParameter {
@@ -378,6 +405,11 @@ mod tests {
             vec![ty("bytes", "primitive")],
         )]);
         let code = generate_client(&spec).unwrap();
+        let repeated = generate_client(&spec).unwrap();
+        assert_eq!(
+            code, repeated,
+            "generation must be byte-identical across runs"
+        );
 
         assert!(code.contains("pub amount: u128,"));
         assert!(code.contains("pub delta: i128,"));
@@ -387,6 +419,22 @@ mod tests {
         assert!(code.contains("format!(\"bytes:{}\", self.memo.clone())"));
         assert!(code.contains("Hex string without a `0x` prefix."));
         assert!(code.contains("pub type TransferOutput = String;"));
+
+        let temp = TempDir::new();
+        let source = temp.0.join("generated.rs");
+        fs::write(&source, code).unwrap();
+        let output = Command::new("rustc")
+            .args(["--crate-type", "lib", "--emit", "metadata"])
+            .arg(&source)
+            .arg("--out-dir")
+            .arg(&temp.0)
+            .output()
+            .expect("rustc must be available to compile generated client code");
+        assert!(
+            output.status.success(),
+            "generated client must compile: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
